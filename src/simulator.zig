@@ -109,7 +109,7 @@ pub fn main() !void {
     const plan_json_path = res.args.input.?;
 
     // Initialize and run the simulation
-    var simulation = initialize(allocator, plan_json_path) catch |err| {
+    var simulation = initializeFromFile(allocator, plan_json_path) catch |err| {
         try stderr_w.print("Failed to initialize simulation: {}\n", .{err});
         exit(1);
     };
@@ -138,13 +138,46 @@ pub fn main() !void {
     try std.fs.Dir.writeFile(fs.cwd(), report_path, report);
 }
 
-pub fn initialize(allocator: Allocator, json_path: []const u8) !*Simulation {
+export fn execute(plan_contents_c: [*c]u8, base_path_c: [*c]u8) callconv(.C) [*c]const u8 {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var allocator = gpa.allocator();
+
+    const base_path: [:0]const u8 = std.mem.span(base_path_c);
+    const plan_contents: [:0]const u8 = std.mem.span(plan_contents_c);
+
+    var simulation = initialize(allocator, plan_contents, base_path) catch |err| {
+        stderr_w.print("Failed to initialize simulation: {}\n", .{err}) catch {};
+        return @ptrCast([*c]const u8, "{\"error\": true}");
+        
+    };
+    defer simulation.deinit();
+
+    runAll(allocator, simulation) catch {
+        return @ptrCast([*c]const u8, "{\"error\": true}");
+    };
+
+    const stat_config = Evaluator.statistics.StatConfig{
+        .ignore_shorter_than_sec = simulation.config.vad_config.vad_machine_config.min_vad_duration_sec,
+    };
+
+    const report = report_generator.createJsonSimulationReport(allocator, simulation.*, stat_config) catch {
+        return @ptrCast([*c]const u8, "{\"error\": true}");
+    };
+    // TODO: cannot seem to free 'report' within the scope of this function (else seg fault)
+    // defer allocator.free(report);
+    return @ptrCast([*c]const u8, report);
+}
+
+pub fn initializeFromFile(allocator: Allocator, json_path: []const u8) !*Simulation {
     const base_path = fs.path.dirname(json_path) orelse ".";
 
     // Read and parse the simulation plan JSON
     const plan_contents = try fs.Dir.readFileAlloc(fs.cwd(), allocator, json_path, 10 * megabyte);
     defer allocator.free(plan_contents);
+    return initialize(allocator, plan_contents, base_path);
+}
 
+pub fn initialize(allocator: Allocator, plan_contents: []const u8, base_path: []const u8) !*Simulation {
     const plan_json: SimulationJSON = try std.json.parseFromSlice(SimulationJSON, allocator, plan_contents, .{
         .ignore_unknown_fields = true,
     });

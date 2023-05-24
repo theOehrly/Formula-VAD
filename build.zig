@@ -138,6 +138,28 @@ pub fn build(b: *std.Build) !void {
     }
     const simulator_run_step = b.step("simulator", "Run the simulator (audio file + reference output)");
     simulator_run_step.dependOn(&simulator_run_cmd.step);
+
+    //
+    // vad-simulator dynamic library - Runs VAD against given audio file and evaluates the results against a reference file
+    //
+    const simulator_lib = b.addSharedLibrary(.{
+        .name = "simulator",
+        .root_source_file = .{ .path = "src/simulator.zig" },
+        .target = target,
+        .optimize = optimize,
+    });
+    try addSndfile(b, simulator_lib, common_options);
+    try addKissFFT(b, simulator_lib, common_options);
+    try addRnnoise(b, simulator_lib, common_options);
+    b.installArtifact(simulator_lib);
+
+    // const simulator_run_cmd = b.addRunArtifact(simulator_exe);
+    // simulator_run_cmd.step.dependOn(b.getInstallStep());
+    // if (b.args) |args| {
+    //     simulator_run_cmd.addArgs(args);
+    // }
+    // const simulator_run_step = b.step("simulator", "Run the simulator (audio file + reference output)");
+    // simulator_run_step.dependOn(&simulator_run_cmd.step);
 }
 
 var kiss_fft_lib: ?*std.Build.Step.Compile = null;

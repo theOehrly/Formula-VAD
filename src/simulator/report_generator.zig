@@ -8,14 +8,14 @@ const AggregateStats = statistics.AggregateStats;
 const StatConfig = statistics.StatConfig;
 
 pub const definitions =
-    \\P   (Positives):                            Total duration of real speech segments (from reference labels)
-    \\TP  (True positives):                       Duration of correctly detected speech segments
-    \\FP  (False positives):                      Duration of incorrectly detected speech segments
-    \\FN  (False negatives):                      Duration of missed speech segments
-    \\TPR (True positive rate, sensitivity):      Probability that VAD detects a real speech segment. = TP / P 
-    \\FNR (False negative rate, miss rate):       Probability that VAD misses a speech segment.       = FN / P 
-    \\PPV (Precision, Positive predictive value): Probability that detected speech segment is true.   = TP / (TP + FP) 
-    \\FDR (False discovery rate):                 Probability that detected speech segment is false.  = FP / (TP + FP) 
+    \\P   (Positives):                            Total number of real speech segments (from reference labels)
+    \\TP  (True positives):                       Number of correctly detected speech segments
+    \\FP  (False positives):                      Number of incorrectly detected speech segments
+    \\FN  (False negatives):                      Number of missed speech segments
+    \\TPR (True positive rate, sensitivity):      Probability that VAD detects a real speech segment. = TP / P
+    \\FNR (False negative rate, miss rate):       Probability that VAD misses a speech segment.       = FN / P
+    \\PPV (Precision, Positive predictive value): Probability that detected speech segment is true.   = TP / (TP + FP)
+    \\FDR (False discovery rate):                 Probability that detected speech segment is false.  = FP / (TP + FP)
 ;
 
 pub const table_header_fmt = "| {s: >30} | {s: >4} | {s: >4} | {s: >4} | {s: >4} | {s: >6} | {s: >6} | {s: >6} | {s: >8} |\n";
@@ -111,6 +111,68 @@ pub fn bufPrintSimulationReport(
     );
     try writer.print("F-Score (β = {d: >5.2})       :   {d: >5.1}% \n", .{ agg.f_score_beta, agg.f_score * 100 });
     try writer.print("Fowlkes-Mallows index     :   {d: >5.1}% \n", .{agg.fm_index * 100});
+
+    return array_buf.toOwnedSlice();
+}
+
+const SingleResultSection = struct {
+    name: []const u8,
+    stats: SingleStats
+};
+
+const JsonRoot = struct {
+    results: []SingleResultSection,
+    aggregated: AggregateStats
+};
+
+pub fn createJsonSimulationReport(
+    allocator: Allocator,
+    simulation: Simulation,
+    stat_config: StatConfig,
+) ![]const u8 {
+    var array_buf = ArrayList(u8).init(allocator);
+    const writer = array_buf.writer();
+
+    var all_stats_list = std.ArrayList(SingleStats).init(allocator);
+    errdefer all_stats_list.deinit();
+
+    var single_results_list = std.ArrayList(SingleResultSection).init(allocator);
+    errdefer single_results_list.deinit();
+
+    for (simulation.instances) |instance| {
+        if (instance.evaluator) |evaluator| {
+            var stats = statistics.fromEvaluator(evaluator, stat_config);
+            const result = SingleResultSection{
+                .name = instance.name,
+                .stats = stats
+            };
+            try all_stats_list.append(stats);
+            try single_results_list.append(result);
+        }
+    }
+
+    const all_stats = try all_stats_list.toOwnedSlice();
+    defer allocator.free(all_stats);
+
+    const single_results = try single_results_list.toOwnedSlice();
+    defer allocator.free(single_results);
+
+    const agg = statistics.aggregate(all_stats);
+
+    const json_root = JsonRoot {
+        .results = single_results,
+        .aggregated = agg
+    };
+
+    const options = std.json.StringifyOptions{
+        .whitespace = .{
+            .indent_level = 0,
+            .indent = .{ .space = 4 },
+            .separator = true,
+        },
+    };
+
+    try std.json.stringify(json_root, options, writer);
 
     return array_buf.toOwnedSlice();
 }
