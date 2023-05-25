@@ -147,24 +147,26 @@ export fn execute(plan_contents_c: [*c]u8, base_path_c: [*c]u8) callconv(.C) [*c
 
     var simulation = initialize(allocator, plan_contents, base_path) catch |err| {
         stderr_w.print("Failed to initialize simulation: {}\n", .{err}) catch {};
-        return @ptrCast([*c]const u8, "{\"error\": true}");
-        
+        exit(1);
+
     };
     defer simulation.deinit();
 
     runAll(allocator, simulation) catch {
-        return @ptrCast([*c]const u8, "{\"error\": true}");
+        exit(1);
     };
 
     const stat_config = Evaluator.statistics.StatConfig{
         .ignore_shorter_than_sec = simulation.config.vad_config.vad_machine_config.min_vad_duration_sec,
     };
 
-    const report = report_generator.createJsonSimulationReport(allocator, simulation.*, stat_config) catch {
-        return @ptrCast([*c]const u8, "{\"error\": true}");
+    const report = report_generator.createJsonSimulationReport(allocator, simulation.*, stat_config) catch |err| {
+        stderr_w.print("Failed to generate JSON result: {}\n", .{err}) catch {};
+        return "{\"error\": true}";
     };
     // TODO: cannot seem to free 'report' within the scope of this function (else seg fault)
     // defer allocator.free(report);
+
     return @ptrCast([*c]const u8, report);
 }
 

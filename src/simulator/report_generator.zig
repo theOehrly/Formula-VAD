@@ -122,7 +122,8 @@ const SingleResultSection = struct {
 
 const JsonRoot = struct {
     results: []SingleResultSection,
-    aggregated: AggregateStats
+    aggregated: AggregateStats,
+    alt: []AggregateStats,
 };
 
 pub fn createJsonSimulationReport(
@@ -159,9 +160,51 @@ pub fn createJsonSimulationReport(
 
     const agg = statistics.aggregate(all_stats);
 
+    var alt_all_stats_list = std.ArrayList([]SingleStats).init(allocator);
+    errdefer {
+        for (alt_all_stats_list.items) |slice| {
+            allocator.free(slice);
+        }
+        alt_all_stats_list.deinit();
+    }
+
+    var per_alt_all_stats_list = std.ArrayList(SingleStats).init(allocator);
+    errdefer per_alt_all_stats_list.deinit();
+    if (simulation.config.vad_config.alt_vad_machine_configs) |alt_configs| {
+        for (0..alt_configs.len) |i| {
+            for (simulation.instances) |instance| {
+                if (instance.alt_evaluators) |alt_evaluators| {
+                    var stats = statistics.fromEvaluator(alt_evaluators[i], stat_config);
+                    try per_alt_all_stats_list.append(stats);
+                }
+            }
+            const per_alt_all_stats = try per_alt_all_stats_list.toOwnedSlice();
+            try alt_all_stats_list.append(per_alt_all_stats);
+        }
+    }
+
+    const alt_all_stats = try alt_all_stats_list.toOwnedSlice();
+    defer {
+        for (0..alt_all_stats.len) |i| {
+            allocator.free(alt_all_stats[i]);
+        }
+        allocator.free(alt_all_stats);
+    }
+
+    var alt_agg_list = std.ArrayList(AggregateStats).init(allocator);
+    errdefer alt_agg_list.deinit();
+
+    for (0..alt_all_stats.len) |i| {
+        const alt_agg = statistics.aggregate(alt_all_stats[i]);
+        try alt_agg_list.append(alt_agg);
+    }
+
+    const alt_aggs = try alt_agg_list.toOwnedSlice();
+
     const json_root = JsonRoot {
         .results = single_results,
-        .aggregated = agg
+        .aggregated = agg,
+        .alt = alt_aggs
     };
 
     const options = std.json.StringifyOptions{

@@ -75,6 +75,7 @@ audio_source: *AudioSource,
 output_dir: ?[]const u8,
 reference_segments: []const Evaluator.SpeechSegment,
 evaluator: ?Evaluator = null,
+alt_evaluators: ?[]Evaluator = null,
 sim_config: DynamicSimConfig,
 main_thread_allocator: Allocator,
 
@@ -114,6 +115,7 @@ pub fn init(
         .audio_source = audio_source,
         .reference_segments = ref_segments,
         .evaluator = null,
+        .alt_evaluators = null,
         .main_thread_allocator = allocator,
         .sim_config = sim_config,
     };
@@ -128,6 +130,10 @@ pub fn deinit(self: *@This()) void {
     alloc.free(self.reference_segments);
     if (self.output_dir) |od| alloc.free(od);
     if (self.evaluator) |*e| e.deinit();
+    if (self.alt_evaluators) |alt_evaluators| {
+        for (alt_evaluators) |*a| a.deinit();
+        alloc.free(alt_evaluators);
+    }
 }
 
 pub fn run(self: *Self) !void {
@@ -145,13 +151,10 @@ pub fn run(self: *Self) !void {
         "{s}: Streaming {d:.2}s from audio file. Running...",
         .{ self.name, self.audio_source.durationSeconds() },
     );
-    var vad_segments = try self.simulateVAD(thread_allocator, self.audio_source);
-    defer thread_allocator.free(vad_segments);
-
-    try self.storeResult(vad_segments);
+    try self.simulateVAD(thread_allocator, self.audio_source);
 }
 
-fn simulateVAD(self: *Self, allocator: Allocator, audio: *AudioSource) ![]VAD.VADSpeechSegment {
+fn simulateVAD(self: *Self, allocator: Allocator, audio: *AudioSource) !void {
     var pipeline_ctx = PipelineContext{
         .sim_instance = self,
     };
@@ -209,15 +212,27 @@ fn simulateVAD(self: *Self, allocator: Allocator, audio: *AudioSource) ![]VAD.VA
     }
 
     const vad_segments = try pipeline.vad.vad_machine.vad_segments.toOwnedSlice();
-    errdefer allocator.free(vad_segments);
+    defer allocator.free(vad_segments);
 
-    return vad_segments;
+    self.evaluator = try self.createEvaluator(vad_segments);
+
+    if (pipeline.vad.alt_vad_machines) |alt_vad_machines| {
+        var alt_evaluators = try self.main_thread_allocator.alloc(Evaluator, alt_vad_machines.len);
+
+        for(0..alt_vad_machines.len) |i| {
+            const alt_vad_segments  = try alt_vad_machines[i].vad_segments.toOwnedSlice();
+            defer allocator.free(alt_vad_segments);
+            alt_evaluators[i] = try self.createEvaluator(alt_vad_segments);
+        }
+
+        self.alt_evaluators = alt_evaluators;
+    }
 }
 
-pub fn storeResult(
+pub fn createEvaluator(
     self: *Self,
-    vad_segments: []VAD.VADSpeechSegment,
-) !void {
+    vad_segments: []VAD.VADSpeechSegment
+) !Evaluator {
     var speech_segments = try self.main_thread_allocator.alloc(Evaluator.SpeechSegment, vad_segments.len);
     errdefer self.main_thread_allocator.free(speech_segments);
 
@@ -241,6 +256,7 @@ pub fn storeResult(
         };
     }
 
-    self.evaluator = try Evaluator.initAndRun(self.main_thread_allocator, speech_segments, self.reference_segments);
-    errdefer self.evaluator.deinit();
+    const evaluator = try Evaluator.initAndRun(self.main_thread_allocator, speech_segments, self.reference_segments);
+    errdefer evaluator.deinit();
+    return evaluator;
 }
